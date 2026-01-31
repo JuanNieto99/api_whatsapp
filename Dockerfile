@@ -14,5 +14,5 @@ COPY . .
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV NODE_ENV=production
 
-EXPOSE 3000
+EXPOSE 80
 CMD ["node", "server.js"]

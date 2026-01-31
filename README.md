@@ -38,10 +38,3 @@ docker compose up --build -d
 Notas:
 - Las sesiones se persisten en `./sessions` (mapeado como volumen). Para escalar en nube usar un volumen compartido o almacenar las sesiones en un almacenamiento persistente.
 - El servicio usa `whatsapp-web.js` y Chromium; la primera vez te pedirá escanear el QR mostrado en `GET /qr`.
-
-Autenticación
--------------
-
-No se requiere autenticación para usar los endpoints; las rutas son públicas por defecto. El sistema ya no solicita ni valida `x-api-key`.
-
-Si deseas volver a añadir autenticación o rate limiting, edita `server.js` para reintroducir un middleware de verificación y configuración correspondiente.
