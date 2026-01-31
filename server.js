@@ -13,7 +13,18 @@ const upload = multer({ storage: multer.memoryStorage() });
 // Usamos LocalAuth para persistir la sesión en ./sessions
 const client = new Client({
   authStrategy: new LocalAuth({ clientId: 'default', dataPath: './sessions' }),
-  puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
+  puppeteer: {
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--single-process',
+      '--no-zygote',
+      '--disable-gpu',
+      '--user-data-dir=/tmp/puppeteer_profile'
+    ]
+  }
 });
 
 let lastQr = null;
@@ -108,7 +119,7 @@ app.post('/send-message', upload.single('file'), async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 80;
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });

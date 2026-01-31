@@ -11,8 +11,13 @@ RUN npm install --production || npm ci --production
 
 COPY . .
 
+# Copiar entrypoint que limpia locks antes de arrancar
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
+
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV NODE_ENV=production
+ENV PORT=80
 
 EXPOSE 80
-CMD ["node", "server.js"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

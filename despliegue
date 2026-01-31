@@ -27,4 +27,8 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 
 docker build -t mi-app-puppeteer:latest -t mi-app-puppeteer:v1 .
 
-docker run -it --rm -p 3000:3000 mi-app-puppeteer:latest
+docker run -d --name mi-app -p 80:80 mi-app-puppeteer:latest
+
+
+
+ssh -i "key2.pem" ubuntu@ec2-3-149-25-119.us-east-2.compute.amazonaws.com
