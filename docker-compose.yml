@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  whatsapp-api:
+    build: .
+    container_name: whatsapp-api
+    volumes:
+      - ./sessions:/usr/src/app/sessions
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    restart: unless-stopped
