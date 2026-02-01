@@ -88,6 +88,11 @@ app.post('/disconnect', async (req, res) => {
   }
 });
 
+// Agrega esto antes de app.listen
+app.get('/', (req, res) => {
+  res.send('<h1>¡API WhatsApp activa!</h1><p>Endpoints: /qr, /status, /connect, /send-message</p>');
+});
+
 // Enviar mensaje (texto y opcional archivo)
 app.post('/send-message', upload.single('file'), async (req, res) => {
   const { number, message } = req.body;
