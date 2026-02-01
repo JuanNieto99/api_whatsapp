@@ -122,6 +122,33 @@ app.post('/send-message', upload.single('file'), async (req, res) => {
     return res.status(500).json({ error: String(err) });
   }
 });
+// Enviar mensaje vía GET (params: number, message, optional file base64, fileName, fileType)
+app.get('/send-message-get', async (req, res) => {
+  const { number, message, file, fileName, fileType } = req.query;
+  if (!number) return res.status(400).json({ error: 'number es requerido' });
+  if (!message && !file) return res.status(400).json({ error: 'message o file es requerido' });
+
+  // Normalizar número: mantener sólo dígitos
+  const normalized = number.replace(/[^0-9]/g, '');
+  const jid = `${normalized}@c.us`;
+
+  try {
+    if (file) {
+      // `file` debe ser el contenido base64 (sin el prefijo data:...;base64,)
+      const media = new MessageMedia(fileType || 'application/octet-stream', file, fileName || 'file');
+      const sent = message
+        ? await client.sendMessage(jid, media, { caption: message })
+        : await client.sendMessage(jid, media);
+      return res.json({ ok: true, id: sent.id._serialized });
+    } else {
+      const sent = await client.sendMessage(jid, message);
+      return res.json({ ok: true, id: sent.id._serialized });
+    }
+  } catch (err) {
+    console.error('send error (GET)', err);
+    return res.status(500).json({ error: String(err) });
+  }
+});
 
 const PORT = process.env.PORT || 80;
 app.listen(PORT, () => {

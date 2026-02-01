@@ -31,4 +31,32 @@ docker run -d --name mi-app -p 80:80 mi-app-puppeteer:latest
 
 
 
-ssh -i "key2.pem" ubuntu@ec2-3-149-25-119.us-east-2.compute.amazonaws.com
+ ssh -i "key2.pem" ubuntu@ec2-18-224-232-13.us-east-2.compute.amazonaws.com
+--------------------------
+
+  sudo apt update
+sudo apt install snapd -y
+sudo snap install core; sudo snap refresh core
+sudo snap install --classic certbot
+sudo ln -s /snap/bin/certbot /usr/bin/certbot   # Esto resuelve "command not found"
+
+docker stop mi-app
+
+sudo certbot certonly --standalone \
+
+  -d chillones.lat \
+
+  --email jgnieto99@gmail.com \   # CAMBIA por tu email real (para renovaciones y alertas)
+  --agree-tos \
+
+  --non-interactive
+
+
+  sudo certbot certonly --standalone \
+  -d chillones.lat \
+  -d www.chillones.lat \
+  --email jgnieto99@gmail.com \
+  --agree-tos \
+  --non-interactive
+
+  sudo certbot certonly --standalone -d chillones.lat -d www.chillones.lat
