@@ -15,12 +15,11 @@ const client = new Client({
   authStrategy: new LocalAuth({ clientId: 'default', dataPath: './sessions' }),
   puppeteer: {
     headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--single-process',
-      '--no-zygote',
       '--disable-gpu',
       '--user-data-dir=/tmp/puppeteer_profile'
     ]
