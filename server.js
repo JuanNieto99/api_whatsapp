@@ -1,8 +1,26 @@
+/**
+ * server.js — API de WhatsApp (capa propia) sobre el motor WAHA.
+ *
+ * Rol: expone DOS caras sobre la misma sesión de WhatsApp que maneja WAHA:
+ *   A) Fachada legacy — rutas HTTP con el MISMO contrato de la versión anterior
+ *      (/qr, /status, /connect, /disconnect, /send-message, /send-message-get),
+ *      para que los sistemas que ya las consumen no cambien nada.
+ *   B) Web UI en '/' — página para escanear el QR, ver el estado y enviar mensajes.
+ *
+ * No habla con WhatsApp directamente: todo pasa por ./wahaClient.js. Al arrancar
+ * intenta enganchar la sesión de WAHA (con reintentos, porque el contenedor de
+ * WAHA puede tardar en levantar), de modo que `docker compose up` reconecta solo
+ * si la sesión ya estaba guardada en el volumen persistente.
+ *
+ * Config por entorno: PORT (default 80) + las de wahaClient.js (WAHA_URL,
+ * WAHA_SESSION, WAHA_API_KEY). Requiere Node 18+ (fetch global).
+ */
+
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const qrcode = require('qrcode');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const waha = require('./wahaClient');
 
 const app = express();
 app.use(cors());
@@ -10,147 +28,154 @@ app.use(express.json());
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Usamos LocalAuth para persistir la sesión en ./sessions
-const client = new Client({
-  authStrategy: new LocalAuth({ clientId: 'default', dataPath: './sessions' }),
-  puppeteer: {
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--user-data-dir=/tmp/puppeteer_profile'
-    ]
-  }
-});
+// Normaliza un número a chatId de WhatsApp: solo dígitos + sufijo @c.us.
+function toChatId(number) {
+  return `${String(number).replace(/[^0-9]/g, '')}@c.us`;
+}
 
-let lastQr = null;
-let ready = false;
+// ---------------------------------------------------------------------------
+// Web UI
+// ---------------------------------------------------------------------------
+app.use(express.static(path.join(__dirname, 'public')));
 
-client.on('qr', (qr) => {
-  lastQr = qr;
-  console.log('QR received');
-});
+// ---------------------------------------------------------------------------
+// Fachada legacy (contrato idéntico a la versión anterior)
+// ---------------------------------------------------------------------------
 
-client.on('ready', () => {
-  ready = true;
-  lastQr = null;
-  console.log('WhatsApp client ready');
-});
-
-client.on('auth_failure', (msg) => {
-  console.error('Auth failure', msg);
-  ready = false;
-});
-
-client.on('disconnected', (reason) => {
-  console.log('Client disconnected:', reason);
-  ready = false;
-});
-
-client.initialize();
-
-// Generar QR como DataURL
-app.get('/qr', async (req, res) => {
-  if (!lastQr) return res.status(404).json({ error: 'QR no disponible' });
+// Estado del cliente -> { ready }
+app.get('/status', async (req, res) => {
   try {
-    const dataUrl = await qrcode.toDataURL(lastQr);
-    res.json({ qr: dataUrl });
+    res.json({ ready: await waha.isReady() });
   } catch (err) {
-    res.status(500).json({ error: 'Error generando QR' });
+    res.status(502).json({ error: String(err) });
   }
 });
 
-// Estado del cliente
-app.get('/status', (req, res) => {
-  res.json({ ready });
+// QR como dataURL -> { qr }. 404 si no hay QR (ya conectado o sin arrancar).
+app.get('/qr', async (req, res) => {
+  try {
+    if (await waha.isReady()) return res.status(404).json({ error: 'QR no disponible' });
+    const qr = await waha.getQrDataUrl();
+    if (!qr) return res.status(404).json({ error: 'QR no disponible' });
+    res.json({ qr });
+  } catch (err) {
+    res.status(502).json({ error: String(err) });
+  }
 });
 
-// Forzar reconexión (útil si quieres regenerar QR)
-app.post('/connect', (req, res) => {
+// Forzar (re)conexión / generar QR.
+app.post('/connect', async (req, res) => {
   try {
-    client.initialize();
+    await waha.ensureStarted();
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    res.status(502).json({ error: String(err) });
   }
 });
 
+// Detener la sesión (conserva la autenticación).
 app.post('/disconnect', async (req, res) => {
   try {
-    await client.destroy();
-    ready = false;
+    await waha.stop();
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    res.status(502).json({ error: String(err) });
   }
 });
 
-// Agrega esto antes de app.listen
-app.get('/', (req, res) => {
-  res.send('<h1>¡API WhatsApp activa!</h1><p>Endpoints: /qr, /status, /connect, /send-message</p>');
+// Cerrar sesión de verdad (borra auth, fuerza nuevo QR). Usado por la web UI.
+app.post('/logout', async (req, res) => {
+  try {
+    await waha.logout();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: String(err) });
+  }
 });
 
-// Enviar mensaje (texto y opcional archivo)
+// Enviar mensaje (texto y opcional archivo) vía multipart/form-data.
 app.post('/send-message', upload.single('file'), async (req, res) => {
   const { number, message } = req.body;
   if (!number) return res.status(400).json({ error: 'number es requerido' });
   if (!message && !req.file) return res.status(400).json({ error: 'message o file es requerido' });
 
-  // Normalizar número: mantener sólo dígitos
-  const normalized = number.replace(/[^0-9]/g, '');
-  const jid = `${normalized}@c.us`;
-
   try {
-    if (req.file) {
-      const media = new MessageMedia(req.file.mimetype, req.file.buffer.toString('base64'), req.file.originalname);
-      if (message) {
-        const sent = await client.sendMessage(jid, media, { caption: message });
-        return res.json({ ok: true, id: sent.id._serialized });
-      } else {
-        const sent = await client.sendMessage(jid, media);
-        return res.json({ ok: true, id: sent.id._serialized });
-      }
-    } else {
-      const sent = await client.sendMessage(jid, message);
-      return res.json({ ok: true, id: sent.id._serialized });
+    if (!(await waha.isReady())) {
+      return res.status(409).json({ error: 'WhatsApp no está conectado' });
     }
+    const chatId = toChatId(number);
+    let id;
+    if (req.file) {
+      id = await waha.sendMedia(
+        chatId,
+        {
+          mimetype: req.file.mimetype,
+          filename: req.file.originalname,
+          data: req.file.buffer.toString('base64'),
+        },
+        message
+      );
+    } else {
+      id = await waha.sendText(chatId, message);
+    }
+    res.json({ ok: true, id });
   } catch (err) {
     console.error('send error', err);
-    return res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: String(err) });
   }
 });
-// Enviar mensaje vía GET (params: number, message, optional file base64, fileName, fileType)
+
+// Enviar mensaje vía GET (params: number, message, file base64, fileName, fileType).
 app.get('/send-message-get', async (req, res) => {
   const { number, message, file, fileName, fileType } = req.query;
   if (!number) return res.status(400).json({ error: 'number es requerido' });
   if (!message && !file) return res.status(400).json({ error: 'message o file es requerido' });
 
-  // Normalizar número: mantener sólo dígitos
-  const normalized = number.replace(/[^0-9]/g, '');
-  const jid = `${normalized}@c.us`;
-
   try {
-    if (file) {
-      // `file` debe ser el contenido base64 (sin el prefijo data:...;base64,)
-      const media = new MessageMedia(fileType || 'application/octet-stream', file, fileName || 'file');
-      const sent = message
-        ? await client.sendMessage(jid, media, { caption: message })
-        : await client.sendMessage(jid, media);
-      return res.json({ ok: true, id: sent.id._serialized });
-    } else {
-      const sent = await client.sendMessage(jid, message);
-      return res.json({ ok: true, id: sent.id._serialized });
+    if (!(await waha.isReady())) {
+      return res.status(409).json({ error: 'WhatsApp no está conectado' });
     }
+    const chatId = toChatId(number);
+    let id;
+    if (file) {
+      id = await waha.sendMedia(
+        chatId,
+        { mimetype: fileType || 'application/octet-stream', filename: fileName || 'file', data: file },
+        message
+      );
+    } else {
+      id = await waha.sendText(chatId, message);
+    }
+    res.json({ ok: true, id });
   } catch (err) {
     console.error('send error (GET)', err);
-    return res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: String(err) });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Arranque + enganche de la sesión de WAHA con reintentos
+// ---------------------------------------------------------------------------
+async function bootstrapSession(retries = 30, delayMs = 2000) {
+  for (let i = 1; i <= retries; i++) {
+    try {
+      await waha.ensureStarted();
+      console.log('WAHA session ensured (intento', i + ')');
+      return;
+    } catch (err) {
+      console.log(`WAHA aún no responde (intento ${i}/${retries}): ${err.message}`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  console.error('No se pudo enganchar la sesión de WAHA tras varios reintentos; se sigue sirviendo la API/UI.');
+}
+
+// Un crash de red no debe tumbar el proceso: se loguea y se sigue.
+process.on('unhandledRejection', (reason) => console.error('unhandledRejection:', reason));
+process.on('uncaughtException', (err) => console.error('uncaughtException:', err));
 
 const PORT = process.env.PORT || 80;
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+  bootstrapSession();
 });

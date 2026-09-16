@@ -1,6 +1,9 @@
 node_modules
 sessions
+waha-sessions
 npm-debug.log
 .env
 Dockerfile
 docker-compose.override.yml
+docs
+.git

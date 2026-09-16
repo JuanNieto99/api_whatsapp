@@ -7,6 +7,9 @@ package-lock.json
 # Sessions (perfiles de navegador, cookies, etc.)
 sessions/
 
+# Datos de sesión del motor WAHA (volumen persistente, no versionar)
+waha-sessions/
+
 # Logs
 logs/
 *.log

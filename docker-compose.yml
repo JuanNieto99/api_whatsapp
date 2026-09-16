@@ -1,13 +1,27 @@
-version: '3.8'
 services:
+  # Motor WhatsApp mantenido por la comunidad (engine NOWEB, sin Chromium).
+  # Guarda la sesión en el volumen ./waha-sessions -> reconecta sin re-escanear QR.
+  waha:
+    image: devlikeapro/waha
+    container_name: waha
+    restart: unless-stopped
+    environment:
+      - WHATSAPP_DEFAULT_ENGINE=NOWEB
+      - WHATSAPP_API_KEY=${WAHA_API_KEY:-change-me-please}
+    volumes:
+      - ./waha-sessions:/app/.sessions
+
+  # Nuestra capa: fachada legacy (rutas de siempre) + web UI en /.
   whatsapp-api:
     build: .
     container_name: whatsapp-api
-    volumes:
-      - ./sessions:/usr/src/app/sessions
-    ports:
-      - "80:80"
+    restart: unless-stopped
+    depends_on:
+      - waha
     environment:
       - PORT=80
-      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-    restart: unless-stopped
+      - WAHA_URL=http://waha:3000
+      - WAHA_SESSION=default
+      - WAHA_API_KEY=${WAHA_API_KEY:-change-me-please}
+    ports:
+      - "80:80"

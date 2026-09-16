@@ -1,16 +1,17 @@
 {
   "name": "whatsapp-api",
-  "version": "0.1.0",
-  "description": "API sencilla para enviar mensajes de WhatsApp con QR y adjuntos",
+  "version": "1.0.0",
+  "description": "API de WhatsApp (fachada + web UI) sobre el motor WAHA",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.18.2",
-    "multer": "^1.4.5-lts.1",
-    "qrcode": "^1.5.1",
-    "whatsapp-web.js": "^1.19.1"
+    "multer": "^1.4.5-lts.1"
   }
 }

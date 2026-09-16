@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WhatsApp API — Panel</title>
+  <style>
+    :root {
+      --bg: #0b141a; --panel: #111b21; --panel-2: #182229; --border: #2a3942;
+      --text: #e9edef; --muted: #8696a0; --accent: #00a884; --accent-2: #06cf9c;
+      --danger: #f15c6d; --warn: #f0b429; --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 28px 18px 60px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+    .logo {
+      width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-size: 22px;
+    }
+    h1 { font-size: 1.25rem; margin: 0; letter-spacing: .2px; }
+    header .sub { color: var(--muted); font-size: .82rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px;
+    }
+    .card h2 { font-size: .95rem; margin: 0 0 14px; font-weight: 600; }
+    .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--muted); flex: none; }
+    .dot.on { background: var(--accent-2); box-shadow: 0 0 0 4px rgba(6,207,156,.18); }
+    .dot.wait { background: var(--warn); box-shadow: 0 0 0 4px rgba(240,180,41,.16); }
+    .dot.off { background: var(--danger); box-shadow: 0 0 0 4px rgba(241,92,109,.14); }
+    .state-label { font-weight: 600; }
+    .hint { color: var(--muted); font-size: .82rem; margin: 2px 0 0; }
+    .qr-box {
+      margin-top: 16px; background: #fff; border-radius: 12px; padding: 14px;
+      display: grid; place-items: center; min-height: 220px;
+    }
+    .qr-box img { width: 100%; max-width: 240px; image-rendering: pixelated; }
+    .qr-box.empty { background: var(--panel-2); color: var(--muted); font-size: .85rem; text-align: center; }
+    label { display: block; font-size: .8rem; color: var(--muted); margin: 12px 0 5px; }
+    input, textarea {
+      width: 100%; background: var(--panel-2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 10px; padding: 11px 12px; font-size: .92rem; font-family: inherit;
+    }
+    input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    textarea { resize: vertical; min-height: 74px; }
+    .btn {
+      appearance: none; border: 1px solid var(--border); background: var(--panel-2);
+      color: var(--text); border-radius: 10px; padding: 10px 16px; font-size: .9rem;
+      cursor: pointer; font-weight: 600; transition: filter .15s, background .15s;
+    }
+    .btn:hover { filter: brightness(1.15); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn.primary { background: var(--accent); border-color: transparent; color: #04231b; }
+    .btn.danger { color: var(--danger); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+    .result { margin-top: 14px; font-size: .85rem; padding: 10px 12px; border-radius: 10px; display: none; }
+    .result.ok { display: block; background: rgba(6,207,156,.12); border: 1px solid rgba(6,207,156,.4); }
+    .result.err { display: block; background: rgba(241,92,109,.12); border: 1px solid rgba(241,92,109,.4); }
+    .log { margin-top: 22px; }
+    .log h2 { font-size: .9rem; margin: 0 0 10px; color: var(--muted); }
+    .log ul { list-style: none; padding: 0; margin: 0; font-size: .82rem; }
+    .log li { padding: 8px 0; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+    .log .t { color: var(--muted); flex: none; }
+    footer { margin-top: 34px; text-align: center; color: var(--muted); font-size: .76rem; }
+    code { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">💬</div>
+      <div>
+        <h1>WhatsApp API — Panel</h1>
+        <div class="sub">Gestión de la sesión y envío de mensajes</div>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- Conexión -->
+      <section class="card">
+        <h2>Conexión</h2>
+        <div class="status-row">
+          <span id="dot" class="dot"></span>
+          <span id="state" class="state-label">Cargando…</span>
+        </div>
+        <p id="hint" class="hint">Consultando estado…</p>
+
+        <div id="qrBox" class="qr-box empty">Escaneá el QR desde WhatsApp &rarr; Dispositivos vinculados</div>
+
+        <div class="actions">
+          <button id="btnConnect" class="btn">Conectar</button>
+          <button id="btnDisconnect" class="btn">Detener</button>
+          <button id="btnLogout" class="btn danger">Cerrar sesión</button>
+        </div>
+      </section>
+
+      <!-- Envío -->
+      <section class="card">
+        <h2>Enviar mensaje</h2>
+        <form id="sendForm">
+          <label for="number">Número (con código de país)</label>
+          <input id="number" name="number" placeholder="573001234567" inputmode="numeric" required />
+
+          <label for="message">Mensaje</label>
+          <textarea id="message" name="message" placeholder="Escribí tu mensaje…"></textarea>
+
+          <label for="file">Adjunto (opcional)</label>
+          <input id="file" name="file" type="file" />
+
+          <div class="row">
+            <button type="submit" class="btn primary" id="btnSend">Enviar</button>
+          </div>
+        </form>
+        <div id="result" class="result"></div>
+      </section>
+    </div>
+
+    <div class="log card">
+      <h2>Historial de envíos (esta sesión del navegador)</h2>
+      <ul id="log"><li class="t">Sin envíos aún.</li></ul>
+    </div>
+
+    <footer>
+      Rutas de la API: <code>/status</code> · <code>/qr</code> · <code>/connect</code> ·
+      <code>/disconnect</code> · <code>/send-message</code> · <code>/send-message-get</code>
+    </footer>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let ready = false;
+
+    async function refreshStatus() {
+      try {
+        const r = await fetch('/status');
+        const j = await r.json();
+        ready = !!j.ready;
+      } catch { ready = null; }
+      paintStatus();
+      if (!ready) refreshQr(); else clearQr();
+    }
+
+    function paintStatus() {
+      const dot = $('dot'), state = $('state'), hint = $('hint');
+      dot.className = 'dot';
+      if (ready === true) {
+        dot.classList.add('on'); state.textContent = 'Conectado';
+        hint.textContent = 'La sesión está activa. Podés enviar mensajes.';
+      } else if (ready === null) {
+        dot.classList.add('off'); state.textContent = 'Sin respuesta del servidor';
+        hint.textContent = 'No se pudo consultar el estado. Reintentando…';
+      } else {
+        dot.classList.add('wait'); state.textContent = 'Esperando vinculación';
+        hint.textContent = 'Escaneá el QR con tu teléfono para conectar.';
+      }
+      $('btnSend').disabled = ready !== true;
+    }
+
+    async function refreshQr() {
+      try {
+        const r = await fetch('/qr');
+        if (!r.ok) { setQrEmpty('QR no disponible por ahora. Probá “Conectar”.'); return; }
+        const j = await r.json();
+        $('qrBox').className = 'qr-box';
+        $('qrBox').innerHTML = '<img alt="QR de vinculación" src="' + j.qr + '">';
+      } catch { setQrEmpty('No se pudo obtener el QR.'); }
+    }
+    function setQrEmpty(msg) { $('qrBox').className = 'qr-box empty'; $('qrBox').textContent = msg; }
+    function clearQr() { setQrEmpty('Conectado ✓ — no hace falta QR.'); }
+
+    async function post(url) {
+      const r = await fetch(url, { method: 'POST' });
+      return r.json().catch(() => ({}));
+    }
+    $('btnConnect').onclick = async () => { await post('/connect'); setTimeout(refreshStatus, 800); };
+    $('btnDisconnect').onclick = async () => { await post('/disconnect'); setTimeout(refreshStatus, 800); };
+    $('btnLogout').onclick = async () => {
+      if (!confirm('¿Cerrar sesión? Vas a tener que escanear el QR de nuevo.')) return;
+      await post('/logout'); setTimeout(refreshStatus, 800);
+    };
+
+    $('sendForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = $('btnSend'), res = $('result');
+      btn.disabled = true; res.className = 'result';
+      const fd = new FormData();
+      fd.append('number', $('number').value);
+      if ($('message').value) fd.append('message', $('message').value);
+      if ($('file').files[0]) fd.append('file', $('file').files[0]);
+      try {
+        const r = await fetch('/send-message', { method: 'POST', body: fd });
+        const j = await r.json();
+        if (r.ok && j.ok) {
+          res.className = 'result ok'; res.textContent = 'Enviado ✓  id: ' + (j.id || '(sin id)');
+          addLog($('number').value, true, j.id);
+          $('message').value = ''; $('file').value = '';
+        } else {
+          res.className = 'result err'; res.textContent = 'Error: ' + (j.error || r.status);
+          addLog($('number').value, false, j.error || r.status);
+        }
+      } catch (err) {
+        res.className = 'result err'; res.textContent = 'Error de red: ' + err;
+      } finally { btn.disabled = ready !== true; }
+    };
+
+    function addLog(number, ok, detail) {
+      const ul = $('log');
+      if (ul.children.length === 1 && ul.children[0].classList.contains('t')) ul.innerHTML = '';
+      const li = document.createElement('li');
+      const t = new Date().toLocaleTimeString();
+      li.innerHTML = '<span class="t">' + t + '</span><span>' + (ok ? '✓' : '✕') + ' ' +
+        number + (detail ? ' — ' + String(detail).slice(0, 60) : '') + '</span>';
+      ul.prepend(li);
+    }
+
+    refreshStatus();
+    setInterval(refreshStatus, 3000);
+  </script>
+</body>
+</html>
