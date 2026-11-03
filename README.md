@@ -87,7 +87,7 @@ node test/smoke.js   # smoke test de la fachada contra un WAHA simulado (sin Wha
 | # | Objetivo | Estado |
 |---|---|---|
 | 1.0 | Migrar de whatsapp-web.js roto a fachada sobre WAHA + web UI | 🔨 Lista para deploy |
-| 1.1 | Multi-sesión (varios números) + auth de fachada opt-in | 🚧 Código completo y testeado, deploy pendiente |
+| 1.1 | Multi-sesión (varios números) + auth de fachada opt-in | ✅ Desplegada (2026-11-03, chillones.lat) |
 
 ## Bitácora de iteraciones
 
@@ -160,7 +160,7 @@ node test/smoke.js   # smoke test de la fachada contra un WAHA simulado (sin Wha
 | | |
 |---|---|
 | **Fecha** | 2026-11-03 |
-| **Estado** | 🚧 Código completo y testeado (smoke 18/18); deploy + re-escaneo de QR por sesión pendientes |
+| **Estado** | ✅ Desplegada 2026-11-03 en chillones.lat (Oracle ARM): `/sessions` responde 200, sesión `default` sigue `WORKING`. Smoke 18/18. |
 | **Objetivo** | Dar soporte a **varias sesiones de WhatsApp simultáneas** (un número por tienda) y **autenticación de la fachada**, como prerequisito de una APK de gestión de tienda (proyecto aparte) donde cada tienda elige de qué sesión salen sus notificaciones. Resuelve los diferidos "Multi-número / multi-sesión" y (parcialmente) "Auth de la web UI" de la iteración 1.0. Diseño en [docs/superpowers/specs/2026-11-03-whatsapp-multisesion-auth-design.md](docs/superpowers/specs/2026-11-03-whatsapp-multisesion-auth-design.md). |
 
 #### Qué se hizo
