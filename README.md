@@ -33,16 +33,23 @@ cuenta (QR), ver el estado y enviar. Por dentro delega la conexión con WhatsApp
 
 ## URLs y endpoints (contrato de la fachada)
 
+Todas las rutas aceptan un parámetro **opcional** `session` (body o query) para elegir
+el número; si se omite, operan sobre la sesión por defecto (`WAHA_SESSION`, `default`).
+Si `FACADE_API_KEY` está definida, todas exigen el header `X-Api-Key` (la web UI en `/`
+sigue pública y lo adjunta desde el navegador).
+
 | Ruta | Método | Descripción |
 |---|---|---|
-| `/` | GET | Web UI (QR, estado, envío, historial). |
-| `/status` | GET | `{ ready: true|false }` (`ready` = sesión `WORKING`). |
-| `/qr` | GET | `{ qr: <dataURL PNG> }`; `404` si ya está conectado o sin QR. |
-| `/connect` | POST | Crea/arranca la sesión. `{ ok: true }`. |
-| `/disconnect` | POST | Detiene la sesión (conserva autenticación). `{ ok: true }`. |
-| `/logout` | POST | Cierra sesión de verdad (borra auth, fuerza nuevo QR). |
-| `/send-message` | POST | `multipart/form-data`: `number`, `message` (opc.), `file` (opc.). |
-| `/send-message-get` | GET | query: `number`, `message`, `file` (base64), `fileName`, `fileType`. |
+| `/` | GET | Web UI (sesiones, QR, estado, envío, historial). Pública. |
+| `/sessions` | GET | `{ sessions: [{ name, status }] }` — lista las sesiones (números) con su estado. |
+| `/sessions` | POST | `{ name }` → crea/arranca una sesión. `{ ok: true, name }`. |
+| `/status` | GET | `{ ready: true|false }` (`ready` = sesión `WORKING`). `?session=`. |
+| `/qr` | GET | `{ qr: <dataURL PNG> }`; `404` si ya está conectado o sin QR. `?session=`. |
+| `/connect` | POST | Crea/arranca la sesión. `{ ok: true }`. `?session=`. |
+| `/disconnect` | POST | Detiene la sesión (conserva autenticación). `{ ok: true }`. `?session=`. |
+| `/logout` | POST | Cierra sesión de verdad (borra auth, fuerza nuevo QR). `?session=`. |
+| `/send-message` | POST | `multipart/form-data`: `number`, `message` (opc.), `file` (opc.), `session` (opc.). |
+| `/send-message-get` | GET | query: `number`, `message`, `file` (base64), `fileName`, `fileType`, `session`. |
 
 Envío — ejemplos `curl`:
 
@@ -80,6 +87,7 @@ node test/smoke.js   # smoke test de la fachada contra un WAHA simulado (sin Wha
 | # | Objetivo | Estado |
 |---|---|---|
 | 1.0 | Migrar de whatsapp-web.js roto a fachada sobre WAHA + web UI | 🔨 Lista para deploy |
+| 1.1 | Multi-sesión (varios números) + auth de fachada opt-in | 🚧 Código completo y testeado, deploy pendiente |
 
 ## Bitácora de iteraciones
 
@@ -144,5 +152,62 @@ node test/smoke.js   # smoke test de la fachada contra un WAHA simulado (sin Wha
 - Smoke test: **10 checks** de la fachada (status, qr, envío texto/imagen/archivo por POST
   y GET, guard 409, normalización de número) contra WAHA simulado. Todos en verde.
   Sin WhatsApp real (eso se verifica a mano tras el deploy).
+
+---
+
+### Iteración 1.1 — Multi-sesión (varios números) + auth de fachada opt-in
+
+| | |
+|---|---|
+| **Fecha** | 2026-11-03 |
+| **Estado** | 🚧 Código completo y testeado (smoke 18/18); deploy + re-escaneo de QR por sesión pendientes |
+| **Objetivo** | Dar soporte a **varias sesiones de WhatsApp simultáneas** (un número por tienda) y **autenticación de la fachada**, como prerequisito de una APK de gestión de tienda (proyecto aparte) donde cada tienda elige de qué sesión salen sus notificaciones. Resuelve los diferidos "Multi-número / multi-sesión" y (parcialmente) "Auth de la web UI" de la iteración 1.0. Diseño en [docs/superpowers/specs/2026-11-03-whatsapp-multisesion-auth-design.md](docs/superpowers/specs/2026-11-03-whatsapp-multisesion-auth-design.md). |
+
+#### Qué se hizo
+- **[wahaClient.js](wahaClient.js):** cada función (`getStatus`, `isReady`, `ensureStarted`,
+  `stop`, `logout`, `getQrDataUrl`, `sendText`, `sendMedia`) recibe ahora `session` como
+  primer argumento; helper `sess()` resuelve el default y **valida** el nombre
+  (`[A-Za-z0-9_-]+`, evita inyección de ruta). Nueva **`listSessions()`**. Se exporta
+  `DEFAULT_SESSION` (antes `SESSION`).
+- **[server.js](server.js):** `getSession(req)` (body o query); nuevos **`GET /sessions`**
+  (lista con estado) y **`POST /sessions`** (crea/arranca); todas las rutas legacy propagan
+  `session`. Middleware **`requireApiKey`** opt-in: si `FACADE_API_KEY` está definida, exige
+  `X-Api-Key` (o `?apikey=`) en toda ruta de API; la UI estática en `/` queda pública. La key
+  se lee **por request** (activar/rotar sin reiniciar). Es **distinta** de `WAHA_API_KEY`.
+- **[public/index.html](public/index.html):** barra con **selector de sesión** + botón
+  **Nueva** + campo **API key** (persistida en localStorage). Helper `api()` que agrega
+  `?session=` y el header `X-Api-Key`. Estado/QR/conexión/envío operan sobre la sesión activa;
+  el historial marca `[sesión]`.
+- **[test/smoke.js](test/smoke.js):** mock de WAHA **multi-sesión** (match por regex de
+  sesión); aserciones de `session` (default y explícita), de `/sessions`, y **caso de auth**
+  (401 sin key, 200 con key correcta, 401 con key equivocada). **18 checks**, todos en verde.
+- **[.env.example](.env.example) + [docker-compose.yml](docker-compose.yml):**
+  `FACADE_API_KEY` opcional documentada (vacía = API abierta, legacy).
+
+#### Decisiones tomadas (con el usuario)
+- **Juan** (brainstorming 2026-11-03): la conexión de WhatsApp es **el mismo gateway (WAHA) en
+  varias sesiones**, y la tienda elige la sesión. Pidió "procede con todos los proyectos, se
+  muy meticuloso".
+- **Retrocompatibilidad como requisito duro:** `/send-message` sin `session` → `default`; auth
+  **opt-in** para no romper a chillones.lat ni a la web de TIENDA que hoy llaman sin auth.
+
+#### ⏳ Diferido — NO perder
+- ⏳ **Auth real de la web UI (login por usuario)** — la página sigue pública; la key vive en
+  localStorage. Suficiente para exposición controlada; login por usuario sería otra iteración.
+- ⏳ **Re-escaneo de QR por sesión** — cada número nuevo exige escanear su QR una vez (igual que
+  la sesión única de la 1.0, ahora por sesión).
+- ⏳ **Webhooks/recepción** y **persistencia server-side del historial** — siguen diferidos de la 1.0.
+
+#### Notas de proceso
+- ⚠️ **Deviación de política TI (una-carpeta-un-repo):** esta iteración se implementó desde una
+  sesión de Claude Code anclada a la carpeta del proyecto **TIENDA**, no a la de `api_whatsapp`,
+  por **decisión explícita de Juan** ("procede con todos los proyectos"). Queda la constancia
+  acá como manda la política; la responsabilidad es de quien decide romperla.
+- **Claude no ejecutó `git commit`:** el árbol queda listo; el commit lo hace Juan.
+
+#### Tests
+Suite final: **18 checks** del smoke test (baseline 10 de la 1.0 + 8 nuevos: sesión
+default/explícita en envío POST y GET, `GET/POST /sessions`, 400 sin name, y 4 de auth).
+Sin WhatsApp real (se verifica a mano tras el deploy). Sin migración de datos.
 
 ---

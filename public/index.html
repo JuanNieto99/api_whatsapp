@@ -17,7 +17,7 @@
       line-height: 1.5;
     }
     .wrap { max-width: 880px; margin: 0 auto; padding: 28px 18px 60px; }
-    header { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
     .logo {
       width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
       background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-size: 22px;
@@ -31,6 +31,13 @@
       padding: 20px;
     }
     .card h2 { font-size: .95rem; margin: 0 0 14px; font-weight: 600; }
+    /* Barra de sesión / auth */
+    .bar {
+      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 16px; margin-bottom: 18px;
+      display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end;
+    }
+    @media (max-width: 720px) { .bar { grid-template-columns: 1fr; } }
     .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
     .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--muted); flex: none; }
     .dot.on { background: var(--accent-2); box-shadow: 0 0 0 4px rgba(6,207,156,.18); }
@@ -45,21 +52,25 @@
     .qr-box img { width: 100%; max-width: 240px; image-rendering: pixelated; }
     .qr-box.empty { background: var(--panel-2); color: var(--muted); font-size: .85rem; text-align: center; }
     label { display: block; font-size: .8rem; color: var(--muted); margin: 12px 0 5px; }
-    input, textarea {
+    .bar label { margin-top: 0; }
+    input, textarea, select {
       width: 100%; background: var(--panel-2); border: 1px solid var(--border);
       color: var(--text); border-radius: 10px; padding: 11px 12px; font-size: .92rem; font-family: inherit;
     }
-    input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
     textarea { resize: vertical; min-height: 74px; }
+    .sessrow { display: flex; gap: 8px; }
+    .sessrow select { flex: 1; }
     .btn {
       appearance: none; border: 1px solid var(--border); background: var(--panel-2);
       color: var(--text); border-radius: 10px; padding: 10px 16px; font-size: .9rem;
-      cursor: pointer; font-weight: 600; transition: filter .15s, background .15s;
+      cursor: pointer; font-weight: 600; transition: filter .15s, background .15s; white-space: nowrap;
     }
     .btn:hover { filter: brightness(1.15); }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
     .btn.primary { background: var(--accent); border-color: transparent; color: #04231b; }
     .btn.danger { color: var(--danger); }
+    .btn.sm { padding: 11px 13px; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
     .result { margin-top: 14px; font-size: .85rem; padding: 10px 12px; border-radius: 10px; display: none; }
@@ -80,14 +91,32 @@
       <div class="logo">💬</div>
       <div>
         <h1>WhatsApp API — Panel</h1>
-        <div class="sub">Gestión de la sesión y envío de mensajes</div>
+        <div class="sub">Varias sesiones (números) a la vez · gestión y envío</div>
       </div>
     </header>
+
+    <!-- Barra: sesión activa + API key (si la auth está activa) -->
+    <div class="bar">
+      <div>
+        <label for="sessionSel">Sesión activa (número)</label>
+        <div class="sessrow">
+          <select id="sessionSel" title="Elegí la sesión sobre la que operar"></select>
+          <button id="btnNewSession" class="btn sm" title="Crear una sesión nueva">＋ Nueva</button>
+        </div>
+      </div>
+      <div>
+        <label for="apiKey">API key (si el servidor la exige)</label>
+        <input id="apiKey" type="password" placeholder="X-Api-Key…" autocomplete="off" />
+      </div>
+      <div>
+        <button id="btnSaveKey" class="btn sm">Guardar key</button>
+      </div>
+    </div>
 
     <div class="grid">
       <!-- Conexión -->
       <section class="card">
-        <h2>Conexión</h2>
+        <h2>Conexión de la sesión</h2>
         <div class="status-row">
           <span id="dot" class="dot"></span>
           <span id="state" class="state-label">Cargando…</span>
@@ -117,7 +146,7 @@
           <input id="file" name="file" type="file" />
 
           <div class="row">
-            <button type="submit" class="btn primary" id="btnSend">Enviar</button>
+            <button type="submit" class="btn primary" id="btnSend">Enviar por la sesión activa</button>
           </div>
         </form>
         <div id="result" class="result"></div>
@@ -130,8 +159,10 @@
     </div>
 
     <footer>
-      Rutas de la API: <code>/status</code> · <code>/qr</code> · <code>/connect</code> ·
-      <code>/disconnect</code> · <code>/send-message</code> · <code>/send-message-get</code>
+      Rutas de la API: <code>/sessions</code> · <code>/status</code> · <code>/qr</code> ·
+      <code>/connect</code> · <code>/disconnect</code> · <code>/logout</code> ·
+      <code>/send-message</code> · <code>/send-message-get</code>
+      — todas aceptan <code>?session=</code>.
     </footer>
   </div>
 
@@ -139,9 +170,56 @@
     const $ = (id) => document.getElementById(id);
     let ready = false;
 
+    // --- API key (persistida en el navegador) y sesión activa ---------------
+    function apiKey() { return localStorage.getItem('wa_apikey') || ''; }
+    function currentSession() { return $('sessionSel').value || 'default'; }
+
+    // Helper central de llamadas: agrega ?session= y el header X-Api-Key.
+    async function api(path, { method = 'GET', body, extraQs } = {}) {
+      const params = new URLSearchParams(extraQs || {});
+      if (!params.has('session')) params.set('session', currentSession());
+      const url = path + '?' + params.toString();
+      const headers = {};
+      const k = apiKey();
+      if (k) headers['X-Api-Key'] = k;
+      const opts = { method, headers };
+      if (body instanceof FormData) {
+        opts.body = body;
+      } else if (body !== undefined) {
+        headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      return fetch(url, opts);
+    }
+
+    // --- Sesiones -----------------------------------------------------------
+    async function loadSessions() {
+      try {
+        const r = await api('/sessions');
+        if (r.status === 401) { markAuthNeeded(); return; }
+        const j = await r.json();
+        const sel = $('sessionSel');
+        const prev = sel.value;
+        const names = (j.sessions || []).map((s) => s.name).filter(Boolean);
+        if (!names.includes('default')) names.unshift('default');
+        sel.innerHTML = names.map((n) => `<option value="${n}">${n}</option>`).join('');
+        // conservar selección previa o la guardada
+        const saved = localStorage.getItem('wa_session');
+        sel.value = names.includes(prev) ? prev : (names.includes(saved) ? saved : 'default');
+      } catch { /* se reintenta en el próximo poll */ }
+    }
+
+    function markAuthNeeded() {
+      $('state').textContent = 'Falta API key';
+      $('hint').textContent = 'El servidor exige API key. Pegala arriba y tocá “Guardar key”.';
+      $('dot').className = 'dot off';
+    }
+
+    // --- Estado / QR de la sesión activa ------------------------------------
     async function refreshStatus() {
       try {
-        const r = await fetch('/status');
+        const r = await api('/status');
+        if (r.status === 401) { markAuthNeeded(); return; }
         const j = await r.json();
         ready = !!j.ready;
       } catch { ready = null; }
@@ -153,21 +231,21 @@
       const dot = $('dot'), state = $('state'), hint = $('hint');
       dot.className = 'dot';
       if (ready === true) {
-        dot.classList.add('on'); state.textContent = 'Conectado';
+        dot.classList.add('on'); state.textContent = 'Conectado — ' + currentSession();
         hint.textContent = 'La sesión está activa. Podés enviar mensajes.';
       } else if (ready === null) {
         dot.classList.add('off'); state.textContent = 'Sin respuesta del servidor';
         hint.textContent = 'No se pudo consultar el estado. Reintentando…';
       } else {
-        dot.classList.add('wait'); state.textContent = 'Esperando vinculación';
-        hint.textContent = 'Escaneá el QR con tu teléfono para conectar.';
+        dot.classList.add('wait'); state.textContent = 'Esperando vinculación — ' + currentSession();
+        hint.textContent = 'Escaneá el QR con el teléfono de esta sesión para conectar.';
       }
       $('btnSend').disabled = ready !== true;
     }
 
     async function refreshQr() {
       try {
-        const r = await fetch('/qr');
+        const r = await api('/qr');
         if (!r.ok) { setQrEmpty('QR no disponible por ahora. Probá “Conectar”.'); return; }
         const j = await r.json();
         $('qrBox').className = 'qr-box';
@@ -177,17 +255,40 @@
     function setQrEmpty(msg) { $('qrBox').className = 'qr-box empty'; $('qrBox').textContent = msg; }
     function clearQr() { setQrEmpty('Conectado ✓ — no hace falta QR.'); }
 
-    async function post(url) {
-      const r = await fetch(url, { method: 'POST' });
-      return r.json().catch(() => ({}));
-    }
-    $('btnConnect').onclick = async () => { await post('/connect'); setTimeout(refreshStatus, 800); };
-    $('btnDisconnect').onclick = async () => { await post('/disconnect'); setTimeout(refreshStatus, 800); };
+    // --- Acciones -----------------------------------------------------------
+    $('btnConnect').onclick = async () => { await api('/connect', { method: 'POST' }); setTimeout(refreshStatus, 800); };
+    $('btnDisconnect').onclick = async () => { await api('/disconnect', { method: 'POST' }); setTimeout(refreshStatus, 800); };
     $('btnLogout').onclick = async () => {
-      if (!confirm('¿Cerrar sesión? Vas a tener que escanear el QR de nuevo.')) return;
-      await post('/logout'); setTimeout(refreshStatus, 800);
+      if (!confirm('¿Cerrar sesión "' + currentSession() + '"? Vas a tener que escanear el QR de nuevo.')) return;
+      await api('/logout', { method: 'POST' }); setTimeout(refreshStatus, 800);
     };
 
+    $('btnNewSession').onclick = async () => {
+      const name = (prompt('Nombre de la nueva sesión (ej: tienda2). Solo letras, dígitos, "_" y "-":') || '').trim();
+      if (!name) return;
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) { alert('Nombre inválido.'); return; }
+      const r = await api('/sessions', { method: 'POST', body: { name } });
+      if (r.status === 401) { markAuthNeeded(); return; }
+      localStorage.setItem('wa_session', name);
+      await loadSessions();
+      $('sessionSel').value = name;
+      refreshStatus();
+    };
+
+    $('sessionSel').onchange = () => {
+      localStorage.setItem('wa_session', currentSession());
+      refreshStatus();
+    };
+
+    // --- API key ------------------------------------------------------------
+    $('apiKey').value = apiKey();
+    $('btnSaveKey').onclick = async () => {
+      localStorage.setItem('wa_apikey', $('apiKey').value.trim());
+      await loadSessions();
+      refreshStatus();
+    };
+
+    // --- Envío --------------------------------------------------------------
     $('sendForm').onsubmit = async (e) => {
       e.preventDefault();
       const btn = $('btnSend'), res = $('result');
@@ -197,7 +298,7 @@
       if ($('message').value) fd.append('message', $('message').value);
       if ($('file').files[0]) fd.append('file', $('file').files[0]);
       try {
-        const r = await fetch('/send-message', { method: 'POST', body: fd });
+        const r = await api('/send-message', { method: 'POST', body: fd });
         const j = await r.json();
         if (r.ok && j.ok) {
           res.className = 'result ok'; res.textContent = 'Enviado ✓  id: ' + (j.id || '(sin id)');
@@ -218,12 +319,16 @@
       const li = document.createElement('li');
       const t = new Date().toLocaleTimeString();
       li.innerHTML = '<span class="t">' + t + '</span><span>' + (ok ? '✓' : '✕') + ' ' +
-        number + (detail ? ' — ' + String(detail).slice(0, 60) : '') + '</span>';
+        '[' + currentSession() + '] ' + number + (detail ? ' — ' + String(detail).slice(0, 60) : '') + '</span>';
       ul.prepend(li);
     }
 
-    refreshStatus();
-    setInterval(refreshStatus, 3000);
+    // --- Arranque -----------------------------------------------------------
+    (async function init() {
+      await loadSessions();
+      await refreshStatus();
+      setInterval(refreshStatus, 3000);
+    })();
   </script>
 </body>
 </html>

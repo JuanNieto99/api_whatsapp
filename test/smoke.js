@@ -1,13 +1,15 @@
 /**
- * test/smoke.js — smoke test de la fachada legacy contra un WAHA simulado.
+ * test/smoke.js — smoke test de la fachada contra un WAHA simulado.
  *
- * Levanta un mock HTTP que imita los endpoints de WAHA, arranca server.js
- * apuntándolo a ese mock, y verifica el contrato de las rutas legacy sin
- * necesidad de WhatsApp real: /status, /qr, /send-message (texto y media),
- * /send-message-get, el guard 409 cuando no está conectado y la normalización
- * del número a chatId.
+ * Levanta un mock HTTP que imita los endpoints de WAHA (multi-sesión), arranca
+ * server.js apuntándolo a ese mock, y verifica el contrato sin WhatsApp real:
+ *   - Fachada legacy: /status, /qr, /send-message (texto y media),
+ *     /send-message-get, guard 409 sin conexión, normalización número -> chatId.
+ *   - Multi-sesión: la sesión se propaga a WAHA (default cuando no se envía,
+ *     la indicada cuando sí), y GET/POST /sessions.
+ *   - Auth de fachada opt-in: con FACADE_API_KEY, 401 sin key y 200 con key.
  *
- * Uso: node test/smoke.js   (sin dependencias; requiere Node 18+)
+ * Uso: node test/smoke.js   (sin dependencias extra; requiere Node 18+)
  * Sale con código 0 si todo pasa, 1 si algo falla.
  */
 
@@ -16,21 +18,41 @@ const assert = require('assert');
 
 let sessionStatus = 'WORKING'; // el mock lo puede cambiar entre casos
 const received = []; // registro de requests que llegaron al mock
+const createdSessions = []; // sesiones creadas vía POST /api/sessions
 
-// --- Mock de WAHA ---------------------------------------------------------
+// --- Mock de WAHA (multi-sesión) -----------------------------------------
 const waha = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     const url = req.url.split('?')[0];
-    received.push({ method: req.method, url, body: body ? JSON.parse(body) : null });
+    const parsed = body ? JSON.parse(body) : null;
+    received.push({ method: req.method, url, body: parsed });
     const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
-    if (req.method === 'GET' && url === '/api/sessions/default') return json(200, { status: sessionStatus });
-    if (req.method === 'GET' && url === '/api/default/auth/qr') return json(200, { mimetype: 'image/png', data: 'QRBASE64==' });
-    if (req.method === 'POST' && url === '/api/sessions') return json(201, { name: 'default', status: 'STARTING' });
-    if (req.method === 'POST' && url === '/api/sessions/default/start') return json(200, { ok: true });
-    if (req.method === 'POST' && url === '/api/sessions/default/stop') return json(200, { ok: true });
+    let m;
+    // Listado de sesiones
+    if (req.method === 'GET' && url === '/api/sessions') {
+      return json(200, [{ name: 'default', status: sessionStatus }, ...createdSessions]);
+    }
+    // Crear sesión
+    if (req.method === 'POST' && url === '/api/sessions') {
+      createdSessions.push({ name: parsed && parsed.name, status: 'STARTING' });
+      return json(201, { name: parsed && parsed.name, status: 'STARTING' });
+    }
+    // Estado de una sesión concreta (cualquier nombre)
+    if (req.method === 'GET' && (m = url.match(/^\/api\/sessions\/([^/]+)$/))) {
+      return json(200, { name: m[1], status: sessionStatus });
+    }
+    // start/stop/logout de una sesión concreta
+    if (req.method === 'POST' && (m = url.match(/^\/api\/sessions\/([^/]+)\/(start|stop|logout)$/))) {
+      return json(200, { ok: true });
+    }
+    // QR de una sesión concreta
+    if (req.method === 'GET' && (m = url.match(/^\/api\/([^/]+)\/auth\/qr$/))) {
+      return json(200, { mimetype: 'image/png', data: 'QRBASE64==' });
+    }
+    // Envíos
     if (req.method === 'POST' && url === '/api/sendText') return json(201, { id: { _serialized: 'txt_1' } });
     if (req.method === 'POST' && url === '/api/sendImage') return json(201, { id: 'img_1' });
     if (req.method === 'POST' && url === '/api/sendFile') return json(201, { id: 'file_1' });
@@ -51,8 +73,9 @@ async function run() {
     catch (e) { failures++; console.error('  ✗', name, '\n    ', e.message); }
   };
 
-  // Caso A — sesión WORKING
+  // ---- Caso A — sesión WORKING, auth desactivada --------------------------
   sessionStatus = 'WORKING';
+  delete process.env.FACADE_API_KEY;
 
   await check('/status devuelve { ready: true }', async () => {
     const j = await (await fetch(`${base}/status`)).json();
@@ -64,7 +87,7 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
-  await check('/send-message (texto) -> sendText con chatId normalizado', async () => {
+  await check('/send-message (texto, sin session) -> sendText con chatId y session=default', async () => {
     const fd = new FormData();
     fd.append('number', '+57 (300) 123-4567');
     fd.append('message', 'hola');
@@ -75,6 +98,18 @@ async function run() {
     const sent = lastTo('/api/sendText');
     assert.strictEqual(sent.body.chatId, '573001234567@c.us');
     assert.strictEqual(sent.body.text, 'hola');
+    assert.strictEqual(sent.body.session, 'default'); // compat: cae en la sesión por defecto
+  });
+
+  await check('/send-message con session explícita -> propaga esa sesión a WAHA', async () => {
+    const fd = new FormData();
+    fd.append('number', '573001234567');
+    fd.append('message', 'multi');
+    fd.append('session', 'tienda1');
+    const r = await fetch(`${base}/send-message`, { method: 'POST', body: fd });
+    const j = await r.json();
+    assert.strictEqual(j.ok, true);
+    assert.strictEqual(lastTo('/api/sendText').body.session, 'tienda1');
   });
 
   await check('/send-message (imagen) -> sendImage con base64 y caption', async () => {
@@ -90,11 +125,13 @@ async function run() {
     assert.strictEqual(sent.body.file.data, Buffer.from('PNGDATA').toString('base64'));
   });
 
-  await check('/send-message-get (texto) -> sendText', async () => {
-    const r = await fetch(`${base}/send-message-get?number=573009999999&message=ping`);
+  await check('/send-message-get (texto, con session) -> sendText', async () => {
+    const r = await fetch(`${base}/send-message-get?number=573009999999&message=ping&session=tienda2`);
     const j = await r.json();
     assert.strictEqual(j.id, 'txt_1');
-    assert.strictEqual(lastTo('/api/sendText').body.chatId, '573009999999@c.us');
+    const sent = lastTo('/api/sendText');
+    assert.strictEqual(sent.body.chatId, '573009999999@c.us');
+    assert.strictEqual(sent.body.session, 'tienda2');
   });
 
   await check('/send-message-get (file base64) -> sendFile', async () => {
@@ -105,7 +142,34 @@ async function run() {
     assert.strictEqual(lastTo('/api/sendFile').body.file.filename, 'x.pdf');
   });
 
-  // Caso B — sesión NO conectada
+  // ---- Multi-sesión: gestión ----------------------------------------------
+  await check('GET /sessions -> lista con estado', async () => {
+    const j = await (await fetch(`${base}/sessions`)).json();
+    assert.ok(Array.isArray(j.sessions));
+    assert.ok(j.sessions.some((s) => s.name === 'default'));
+  });
+
+  await check('POST /sessions { name } -> { ok, name }', async () => {
+    const r = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'tienda3' }),
+    });
+    const j = await r.json();
+    assert.strictEqual(j.ok, true);
+    assert.strictEqual(j.name, 'tienda3');
+  });
+
+  await check('POST /sessions sin name -> 400', async () => {
+    const r = await fetch(`${base}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.strictEqual(r.status, 400);
+  });
+
+  // ---- Caso B — sesión NO conectada ---------------------------------------
   sessionStatus = 'SCAN_QR_CODE';
 
   await check('/status devuelve { ready: false }', async () => {
@@ -130,6 +194,36 @@ async function run() {
     const r = await fetch(`${base}/send-message-get?number=573001234567&message=hola`);
     assert.strictEqual(r.status, 409);
   });
+
+  // ---- Caso C — auth de fachada (opt-in) ----------------------------------
+  sessionStatus = 'WORKING';
+  process.env.FACADE_API_KEY = 'secreto123';
+
+  await check('con FACADE_API_KEY, /status sin key -> 401', async () => {
+    const r = await fetch(`${base}/status`);
+    assert.strictEqual(r.status, 401);
+  });
+
+  await check('con FACADE_API_KEY, /status con X-Api-Key correcta -> 200', async () => {
+    const r = await fetch(`${base}/status`, { headers: { 'X-Api-Key': 'secreto123' } });
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(await r.json(), { ready: true });
+  });
+
+  await check('con FACADE_API_KEY, /status con key equivocada -> 401', async () => {
+    const r = await fetch(`${base}/status`, { headers: { 'X-Api-Key': 'otra' } });
+    assert.strictEqual(r.status, 401);
+  });
+
+  await check('con FACADE_API_KEY, /send-message con key -> 200', async () => {
+    const fd = new FormData();
+    fd.append('number', '573001234567');
+    fd.append('message', 'auth ok');
+    const r = await fetch(`${base}/send-message`, { method: 'POST', headers: { 'X-Api-Key': 'secreto123' }, body: fd });
+    assert.strictEqual(r.status, 200);
+  });
+
+  delete process.env.FACADE_API_KEY; // restaurar modo abierto
 
   console.log(failures === 0 ? '\nTODO OK ✅' : `\nFALLARON ${failures} test(s) ❌`);
   process.exit(failures === 0 ? 0 : 1);

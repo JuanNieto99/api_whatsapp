@@ -23,5 +23,7 @@ services:
       - WAHA_URL=http://waha:3000
       - WAHA_SESSION=default
       - WAHA_API_KEY=${WAHA_API_KEY:-change-me-please}
+      # Auth de la fachada hacia afuera (opcional). Vacío = API abierta (legacy).
+      - FACADE_API_KEY=${FACADE_API_KEY:-}
     ports:
       - "80:80"

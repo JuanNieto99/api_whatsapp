@@ -5,17 +5,25 @@
  * (server.js) habla WhatsApp exclusivamente a través de estas funciones, de modo
  * que si WAHA cambia endpoints, se toca solo este archivo.
  *
+ * MULTI-SESIÓN: todas las funciones de sesión/envío reciben el nombre de la
+ * sesión como primer argumento (una sesión = un número de WhatsApp vinculado).
+ * Si se omite (null/''), se usa DEFAULT_SESSION (env WAHA_SESSION, o 'default').
+ * Esto preserva el contrato legacy de un solo número: los consumidores viejos que
+ * no mandan `session` siguen cayendo en la sesión por defecto. WAHA soporta varias
+ * sesiones simultáneas de forma nativa; esta capa solo elige a cuál apuntar.
+ *
  * Uso típico:
  *   const waha = require('./wahaClient');
- *   await waha.ensureStarted();                 // arranca/reengancha la sesión
- *   const st = await waha.getStatus();          // 'WORKING' | 'SCAN_QR_CODE' | ...
- *   const qr = await waha.getQrDataUrl();       // dataURL PNG o null si no aplica
- *   await waha.sendText('549...@c.us', 'Hola');
+ *   await waha.ensureStarted('tienda1');            // arranca/reengancha la sesión
+ *   const st  = await waha.getStatus('tienda1');    // 'WORKING' | 'SCAN_QR_CODE' | ...
+ *   const qr  = await waha.getQrDataUrl('tienda1');  // dataURL PNG o null si no aplica
+ *   await waha.sendText('tienda1', '57...@c.us', 'Hola');
+ *   const todas = await waha.listSessions();         // [{ name, status }, ...]
  *
  * Config por entorno (con defaults para desarrollo):
  *   WAHA_URL      URL interna del motor (ej. http://waha:3000)
- *   WAHA_SESSION  nombre de la sesión (ej. default)
- *   WAHA_API_KEY  secreto; se envía en el header X-Api-Key
+ *   WAHA_SESSION  nombre de la sesión por defecto (ej. default)
+ *   WAHA_API_KEY  secreto interno del motor; se envía en el header X-Api-Key a WAHA
  *
  * Notas de diseño:
  *  - Engine NOWEB (sin Chromium): evita la clase de fallos de puppeteer.
@@ -26,8 +34,19 @@
  */
 
 const WAHA_URL = (process.env.WAHA_URL || 'http://localhost:3000').replace(/\/+$/, '');
-const SESSION = process.env.WAHA_SESSION || 'default';
+const DEFAULT_SESSION = process.env.WAHA_SESSION || 'default';
 const API_KEY = process.env.WAHA_API_KEY || '';
+
+// Resuelve y valida el nombre de sesión. Vacío/null -> DEFAULT_SESSION. Rechaza
+// nombres con caracteres fuera de [A-Za-z0-9_-] para que no se puedan inyectar
+// segmentos de ruta en las URLs de WAHA.
+function sess(session) {
+  const s = session == null || session === '' ? DEFAULT_SESSION : String(session).trim();
+  if (!/^[A-Za-z0-9_-]+$/.test(s)) {
+    throw new Error(`Nombre de sesión inválido: "${s}" (solo letras, dígitos, "_" y "-")`);
+  }
+  return s;
+}
 
 // Llama a la API de WAHA agregando base URL y API key. Devuelve el Response.
 async function wahaFetch(path, options = {}) {
@@ -39,10 +58,11 @@ async function wahaFetch(path, options = {}) {
   return fetch(`${WAHA_URL}${path}`, { ...options, headers });
 }
 
-// Estado de la sesión: 'STARTING' | 'SCAN_QR_CODE' | 'WORKING' | 'FAILED' |
-// 'STOPPED' | 'PASSKEY_REQUIRED' | ... ; null si la sesión aún no existe.
-async function getStatus() {
-  const res = await wahaFetch(`/api/sessions/${SESSION}`);
+// Estado de una sesión: 'STARTING' | 'SCAN_QR_CODE' | 'WORKING' | 'FAILED' |
+// 'STOPPED' | ... ; null si la sesión aún no existe.
+async function getStatus(session) {
+  const s = sess(session);
+  const res = await wahaFetch(`/api/sessions/${s}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`WAHA getStatus ${res.status}: ${await res.text()}`);
   const data = await res.json();
@@ -50,44 +70,61 @@ async function getStatus() {
 }
 
 // ¿La sesión está lista para enviar?
-async function isReady() {
-  return (await getStatus()) === 'WORKING';
+async function isReady(session) {
+  return (await getStatus(session)) === 'WORKING';
 }
 
-// Crea la sesión si no existe y la arranca; idempotente. Se llama al boot y en /connect.
-async function ensureStarted() {
-  const status = await getStatus();
+// Lista todas las sesiones con su estado (incluye las detenidas con all=true).
+// Devuelve [{ name, status }]. Usado por la UI/consumidores para elegir sesión.
+async function listSessions() {
+  const res = await wahaFetch('/api/sessions?all=true');
+  if (!res.ok) throw new Error(`WAHA listSessions ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return (Array.isArray(data) ? data : []).map((x) => ({
+    name: x.name,
+    status: x.status || null,
+  }));
+}
+
+// Crea la sesión si no existe y la arranca; idempotente. Se llama al boot, en
+// /connect y al crear una sesión nueva desde la UI.
+async function ensureStarted(session) {
+  const s = sess(session);
+  const status = await getStatus(s);
   if (status === null) {
     const res = await wahaFetch('/api/sessions', {
       method: 'POST',
-      body: JSON.stringify({ name: SESSION, start: true }),
+      body: JSON.stringify({ name: s, start: true }),
     });
     // 201/200 = creada; 422/409 = ya existía (carrera): caemos a start explícito.
     if (!res.ok && res.status !== 422 && res.status !== 409) {
       throw new Error(`WAHA create session ${res.status}: ${await res.text()}`);
     }
-    if (res.status === 422 || res.status === 409) await startExisting();
+    if (res.status === 422 || res.status === 409) await startExisting(s);
     return;
   }
-  if (status === 'STOPPED' || status === 'FAILED') await startExisting();
+  if (status === 'STOPPED' || status === 'FAILED') await startExisting(s);
 }
 
-async function startExisting() {
-  const res = await wahaFetch(`/api/sessions/${SESSION}/start`, { method: 'POST' });
+async function startExisting(session) {
+  const s = sess(session);
+  const res = await wahaFetch(`/api/sessions/${s}/start`, { method: 'POST' });
   if (!res.ok) throw new Error(`WAHA start ${res.status}: ${await res.text()}`);
 }
 
 // Detiene la sesión conservando la autenticación (mapea el /disconnect legacy).
-async function stop() {
-  const res = await wahaFetch(`/api/sessions/${SESSION}/stop`, { method: 'POST' });
+async function stop(session) {
+  const s = sess(session);
+  const res = await wahaFetch(`/api/sessions/${s}/stop`, { method: 'POST' });
   if (!res.ok && res.status !== 404) {
     throw new Error(`WAHA stop ${res.status}: ${await res.text()}`);
   }
 }
 
 // Cierra sesión de verdad: borra la autenticación y fuerza re-escaneo de QR.
-async function logout() {
-  const res = await wahaFetch(`/api/sessions/${SESSION}/logout`, { method: 'POST' });
+async function logout(session) {
+  const s = sess(session);
+  const res = await wahaFetch(`/api/sessions/${s}/logout`, { method: 'POST' });
   if (!res.ok && res.status !== 404) {
     throw new Error(`WAHA logout ${res.status}: ${await res.text()}`);
   }
@@ -95,8 +132,9 @@ async function logout() {
 
 // QR como dataURL (data:image/png;base64,...). Devuelve null si no hay QR
 // disponible (p.ej. la sesión ya está WORKING o aún no arrancó).
-async function getQrDataUrl() {
-  const res = await wahaFetch(`/api/${SESSION}/auth/qr`, {
+async function getQrDataUrl(session) {
+  const s = sess(session);
+  const res = await wahaFetch(`/api/${s}/auth/qr`, {
     headers: { Accept: 'application/json' },
   });
   if (!res.ok) return null;
@@ -117,22 +155,25 @@ function extractId(resp) {
   );
 }
 
-// Envía texto. chatId con formato '<digitos>@c.us'. Devuelve el id del mensaje.
-async function sendText(chatId, text) {
+// Envía texto por una sesión. chatId con formato '<digitos>@c.us'. Devuelve el id.
+async function sendText(session, chatId, text) {
+  const s = sess(session);
   const res = await wahaFetch('/api/sendText', {
     method: 'POST',
-    body: JSON.stringify({ session: SESSION, chatId, text }),
+    body: JSON.stringify({ session: s, chatId, text }),
   });
   if (!res.ok) throw new Error(`WAHA sendText ${res.status}: ${await res.text()}`);
   return extractId(await res.json());
 }
 
-// Envía media (imagen o archivo) desde base64. Elige sendImage/sendFile por mimetype.
-async function sendMedia(chatId, { mimetype, filename, data }, caption) {
+// Envía media (imagen o archivo) desde base64 por una sesión. Elige sendImage/
+// sendFile por mimetype.
+async function sendMedia(session, chatId, { mimetype, filename, data }, caption) {
+  const s = sess(session);
   const isImage = (mimetype || '').startsWith('image/');
   const endpoint = isImage ? '/api/sendImage' : '/api/sendFile';
   const body = {
-    session: SESSION,
+    session: s,
     chatId,
     file: { mimetype: mimetype || 'application/octet-stream', filename: filename || 'file', data },
   };
@@ -143,9 +184,10 @@ async function sendMedia(chatId, { mimetype, filename, data }, caption) {
 }
 
 module.exports = {
-  SESSION,
+  DEFAULT_SESSION,
   getStatus,
   isReady,
+  listSessions,
   ensureStarted,
   stop,
   logout,
