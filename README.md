@@ -211,3 +211,32 @@ default/explícita en envío POST y GET, `GET/POST /sessions`, 400 sin name, y 4
 Sin WhatsApp real (se verifica a mano tras el deploy). Sin migración de datos.
 
 ---
+
+### Iteración 1.2 — Login admin + token al loguearse (DISEÑO acordado, sin código)
+
+| | |
+|---|---|
+| **Fecha** | 2026-11-05 |
+| **Estado** | 🚧 Diseño acordado en brainstorming (desde la sesión de TIENDA); **cero código tocado**. Spec pendiente. |
+| **Objetivo** | Pedido de Juan: la API de envío exige token **siempre**; la gestión (crear sesiones, QR) queda detrás de un **login** de un solo admin. El token lo obtienen los sistemas al loguearse. Resuelve el diferido "Auth real de la web UI" de la 1.1. |
+
+#### Diseño acordado (brainstorming 2026-11-05, en la sesión de TIENDA)
+1. Credenciales (user/pass) y token en `./data/auth.json` (volumen persistido); `ADMIN_USER`/`ADMIN_PASS`
+   (env) solo siembran el primer arranque.
+2. `POST /login` `{ user, pass }` → `{ ok, token }` + cookie firmada para el panel.
+3. `POST /change-password` `{ user, passActual, passNueva }` → valida la actual y cambia. Lo usa el
+   panel y también TIENDA (que sincroniza su Configuración contra este endpoint).
+4. **Toda** la API exige cookie de admin o `X-Api-Key` con el token vigente — se elimina el modo
+   opt-in de `FACADE_API_KEY` (su valor pasa a sembrar el token inicial, para no romper consumidores).
+5. Panel: pantalla de login, muestra el token y permite **rotarlo**. Token fijo (sin expiración ni
+   JWT — decidido con Juan: un solo admin, consumidores máquina-a-máquina).
+6. Descartado con Juan: límite de 3 sesiones nuevas/día (idea inicial; el login basta).
+
+#### ⏳ Diferido — NO perder
+- ⏳ **Implementación completa de este diseño** — escribir spec + plan y ejecutar DESDE ESTA carpeta
+  (política una-carpeta-un-repo). Falta que Juan defina usuario/contraseña por defecto.
+- ⏳ **Contraparte en TIENDA** — properties `WHATSAPP_USER`/`WHATSAPP_PASS` (defaults quemados,
+  editables en Configuración), re-login automático ante 401 y cambio de contraseña sincronizado.
+  Detalle completo en la bitácora de TIENDA (Iteración 2.4).
+
+---
