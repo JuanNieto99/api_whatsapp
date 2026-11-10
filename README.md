@@ -88,6 +88,7 @@ node test/smoke.js   # smoke test de la fachada contra un WAHA simulado (sin Wha
 |---|---|---|
 | 1.0 | Migrar de whatsapp-web.js roto a fachada sobre WAHA + web UI | 🔨 Lista para deploy |
 | 1.1 | Multi-sesión (varios números) + auth de fachada opt-in | ✅ Desplegada (2026-11-03, chillones.lat) |
+| 1.2 | Login de admin + token obligatorio en toda la API | 🔨 Lista para deploy (pendiente commit de Juan + `git pull` y rebuild en el server) |
 
 ## Bitácora de iteraciones
 
@@ -238,5 +239,92 @@ Sin WhatsApp real (se verifica a mano tras el deploy). Sin migración de datos.
 - ⏳ **Contraparte en TIENDA** — properties `WHATSAPP_USER`/`WHATSAPP_PASS` (defaults quemados,
   editables en Configuración), re-login automático ante 401 y cambio de contraseña sincronizado.
   Detalle completo en la bitácora de TIENDA (Iteración 2.4).
+
+---
+
+### Iteración 1.1b — Deploy de la 1.1 en el server Oracle (2026-11-09)
+
+| | |
+|---|---|
+| **Fecha** | 2026-11-09 |
+| **Estado** | ✅ Desplegada y verificada (desde la sesión de TIENDA, a pedido de Juan) |
+| **Objetivo** | Bajar los cambios del repo al server y reconstruir el servicio. |
+
+#### Qué se hizo
+- Server actual: **Oracle Cloud `140.84.161.116`** (host `vnic-servidor`, ARM; llave
+  `ssh-key-2026-02-03.key`). El EC2 viejo de `despliegue` ya no responde; `chillones.lat`
+  pasa por Cloudflare (no sirve para SSH).
+- El árbol del server tenía la 1.1 aplicada A MANO (idéntica al repo) + docs viejas: respaldo
+  en `~/backup-pre-pull-20261109/`, `git reset --hard` + `pull` → `4b78b37`.
+- Re-aplicado el pin ARM `devlikeapro/waha:noweb-arm` en docker-compose.yml y
+  `docker compose up -d --build` (solo recrea `whatsapp-api`; `waha` ni se tocó).
+
+#### Verificación end-to-end
+- `https://chillones.lat/status` → `{"ready":true}`; `/sessions` → Camila, default y juan en WORKING
+  (las sesiones sobrevivieron al rebuild, sin re-escanear QR).
+
+#### ⏳ Diferido — NO perder
+- ⏳ **Pin ARM del compose solo vive en el server** — `docker-compose.yml` del repo dice
+  `devlikeapro/waha` a secas; en el server se re-aplica a mano `noweb-arm`. Contra la política
+  "nada manual": hay que commitear el pin (o parametrizarlo por env) en el repo. Retomar en la 1.2.
+- ⏳ **`levantar_mi_app.sh` (cron diario) solo vive en el server** — no está versionado; traerlo
+  al repo. Retomar en la 1.2.
+
+---
+
+### Iteración 1.2 — Login de admin + token obligatorio (auth SIEMPRE encendida)
+
+| | |
+|---|---|
+| **Fecha** | 2026-11-10 |
+| **Estado** | 🔨 Lista para deploy — código completo y testeado; falta commit/push de Juan y `git pull` + rebuild en el server Oracle. |
+| **Objetivo** | Pedido de Juan (diseño acordado el 2026-11-05 en la sesión de TIENDA, iteración 2.4 de esa bitácora): enviar mensajes debe exigir token, la gestión queda detrás de un login, y el token lo obtienen los sistemas al loguearse. Agregado del 2026-11-10: una petición sin credencial debe responder que **hay que actualizarse porque ahora se necesita iniciar sesión para enviar los mensajes**. |
+
+#### Qué se hizo
+- **[auth.js](auth.js) (nuevo):** credenciales y token persistidos en `./data/auth.json`
+  (hash scrypt + salt; token plano). Siembra SOLO el primer arranque: `ADMIN_USER`/`ADMIN_PASS`
+  (defaults del equipo) y token = `FACADE_API_KEY` si está definida (migración sin corte) o
+  aleatorio. Sesiones de cookie en memoria (sid, TTL 12 h).
+- **[server.js](server.js):** se eliminó el modo opt-in — la auth es **obligatoria** en toda
+  ruta de API: cookie de admin o `X-Api-Key`/`?apikey` con el token vigente. Sin credencial →
+  **401 `{ error: 'login_requerido' }`** con el mensaje: *"La API de WhatsApp ahora requiere
+  iniciar sesión para enviar mensajes. Debe actualizar su aplicación o configurar usuario y
+  contraseña para continuar."* Rutas nuevas: `POST /login` (token + cookie `wa_admin`),
+  `POST /change-password`, `POST /logout-admin`, `GET /token`, `POST /rotate-token`.
+  La web UI estática en `/` sigue pública.
+- **[public/index.html](public/index.html):** overlay de login (usuario/contraseña, cookie
+  `same-origin`); se eliminó el input manual de X-Api-Key (y su localStorage). La barra
+  muestra el **token vigente** con botón **Rotar** y hay botón **Salir** del panel.
+- **[docker-compose.yml](docker-compose.yml):** volumen `./data:/app/data` (persistencia de
+  auth.json), envs de siembra `ADMIN_USER`/`ADMIN_PASS`/`FACADE_API_KEY`, y
+  `image: ${WAHA_IMAGE:-devlikeapro/waha}` → cierra el diferido del **pin ARM**: en el server
+  el `.env` lleva `WAHA_IMAGE=devlikeapro/waha:noweb-arm` (ya no se edita el compose a mano).
+  [.env.example](.env.example) documenta las 4 variables. `data/` entró al `.gitignore` (secretos).
+- Tests: **[test/auth.js](test/auth.js) (nuevo, 6 casos)** y [test/smoke.js](test/smoke.js)
+  reescrito al contrato nuevo (24 casos: legacy+multisesión autenticados, 401 con mensaje de
+  actualización, login/cookie, rotación, change-password, UI pública).
+
+#### Decisiones tomadas (con el usuario)
+- **Juan (2026-11-10):** aplicar ya el diseño de la 2.4 y publicarlo; el 401 debe decir
+  explícitamente que hay que actualizarse porque ahora se necesita iniciar sesión.
+- Mensaje y rutas según el diseño 2.4 (un solo admin, token fijo visible/rotable, sin JWT).
+- **Constancia de política:** este trabajo se hizo desde la sesión de TIENDA (pedido de Juan
+  del 2026-11-10), contra la regla "una carpeta por proyecto". Queda registrado aquí y en la
+  bitácora de TIENDA (iteración 2.5).
+
+#### ⏳ Diferido — NO perder
+- ⏳ **`levantar_mi_app.sh` sigue sin versionar** — el acceso SSH al server desde la sesión
+  automática fue denegado por permisos; traerlo al repo en el próximo acceso manual al server
+  (`scp` desde `ubuntu@140.84.161.116`) y commitearlo en `despliegue/`.
+- ⏳ **Deploy pendiente**: (1) Juan commitea y pushea este repo; (2) en el server:
+  `cd ~/api_whatsapp && git pull`, agregar al `.env`: `WAHA_IMAGE=devlikeapro/waha:noweb-arm`
+  y (si no está) `FACADE_API_KEY=<key que ya usan los consumidores>` para sembrar el token
+  sin corte; (3) `docker compose up -d --build` (solo recrea `whatsapp-api`); (4) verificar:
+  `/status` sin key → 401 con mensaje nuevo; con `X-Api-Key` vieja → 200; `/sessions`
+  conserva Camila/default/juan; login en el panel con las credenciales default y cambiarlas.
+
+#### Tests
+Suite: **test/auth.js 6/6** + **test/smoke.js 24/24** (antes 18). Sin migración de datos
+(auth.json se crea solo en el primer arranque).
 
 ---

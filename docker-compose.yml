@@ -1,8 +1,10 @@
 services:
   # Motor WhatsApp mantenido por la comunidad (engine NOWEB, sin Chromium).
   # Guarda la sesión en el volumen ./waha-sessions -> reconecta sin re-escanear QR.
+  # WAHA_IMAGE permite pinear la variante de la plataforma (en el server ARM va
+  # WAHA_IMAGE=devlikeapro/waha:noweb-arm en el .env; default = multiarch genérica).
   waha:
-    image: devlikeapro/waha
+    image: ${WAHA_IMAGE:-devlikeapro/waha}
     container_name: waha
     restart: unless-stopped
     environment:
@@ -12,6 +14,10 @@ services:
       - ./waha-sessions:/app/.sessions
 
   # Nuestra capa: fachada legacy (rutas de siempre) + web UI en /.
+  # AUTH OBLIGATORIA: credenciales y token viven en ./data/auth.json (volumen).
+  # ADMIN_USER / ADMIN_PASS / FACADE_API_KEY solo SIEMBRAN el primer arranque
+  # (si ./data/auth.json no existe); después manda el archivo. Sembrar
+  # FACADE_API_KEY con la key que ya usan los consumidores evita cortes.
   whatsapp-api:
     build: .
     container_name: whatsapp-api
@@ -23,7 +29,10 @@ services:
       - WAHA_URL=http://waha:3000
       - WAHA_SESSION=default
       - WAHA_API_KEY=${WAHA_API_KEY:-change-me-please}
-      # Auth de la fachada hacia afuera (opcional). Vacío = API abierta (legacy).
+      - ADMIN_USER=${ADMIN_USER:-}
+      - ADMIN_PASS=${ADMIN_PASS:-}
       - FACADE_API_KEY=${FACADE_API_KEY:-}
+    volumes:
+      - ./data:/app/data
     ports:
       - "80:80"

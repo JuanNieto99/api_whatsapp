@@ -10,6 +10,9 @@ sessions/
 # Datos de sesión del motor WAHA (volumen persistente, no versionar)
 waha-sessions/
 
+# Credenciales y token de la fachada (auth.json — secretos, no versionar)
+data/
+
 # Logs
 logs/
 *.log

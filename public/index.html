@@ -83,6 +83,15 @@
     .log .t { color: var(--muted); flex: none; }
     footer { margin-top: 34px; text-align: center; color: var(--muted); font-size: .76rem; }
     code { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; }
+    /* Overlay de login (la API ahora exige iniciar sesión) */
+    .overlay {
+      position: fixed; inset: 0; background: rgba(4, 10, 13, .82); z-index: 50;
+      display: none; place-items: center; padding: 18px;
+    }
+    .overlay.visible { display: grid; }
+    .overlay .card { width: 100%; max-width: 360px; }
+    .tokenrow { display: flex; gap: 8px; align-items: center; }
+    .tokenrow code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px 10px; }
   </style>
 </head>
 <body>
@@ -95,7 +104,7 @@
       </div>
     </header>
 
-    <!-- Barra: sesión activa + API key (si la auth está activa) -->
+    <!-- Barra: sesión activa + token de API (visible tras iniciar sesión) -->
     <div class="bar">
       <div>
         <label for="sessionSel">Sesión activa (número)</label>
@@ -105,12 +114,31 @@
         </div>
       </div>
       <div>
-        <label for="apiKey">API key (si el servidor la exige)</label>
-        <input id="apiKey" type="password" placeholder="X-Api-Key…" autocomplete="off" />
+        <label>Token de API (header <code>X-Api-Key</code> de los consumidores)</label>
+        <div class="tokenrow">
+          <code id="tokenView">—</code>
+          <button id="btnRotate" class="btn sm" title="Generar un token nuevo (los consumidores deben re-loguearse)">Rotar</button>
+        </div>
       </div>
       <div>
-        <button id="btnSaveKey" class="btn sm">Guardar key</button>
+        <button id="btnLogoutAdmin" class="btn sm" title="Cerrar la sesión del panel">Salir</button>
       </div>
+    </div>
+
+    <!-- Login del panel: la API exige iniciar sesión -->
+    <div id="loginOverlay" class="overlay">
+      <form id="loginForm" class="card">
+        <h2>Iniciar sesión</h2>
+        <p class="hint">La API ahora requiere usuario y contraseña de administrador.</p>
+        <label for="loginUser">Usuario</label>
+        <input id="loginUser" autocomplete="username" required />
+        <label for="loginPass">Contraseña</label>
+        <input id="loginPass" type="password" autocomplete="current-password" required />
+        <div class="row">
+          <button type="submit" class="btn primary">Entrar</button>
+        </div>
+        <div id="loginError" class="result"></div>
+      </form>
     </div>
 
     <div class="grid">
@@ -170,19 +198,16 @@
     const $ = (id) => document.getElementById(id);
     let ready = false;
 
-    // --- API key (persistida en el navegador) y sesión activa ---------------
-    function apiKey() { return localStorage.getItem('wa_apikey') || ''; }
+    // --- Sesión activa -------------------------------------------------------
     function currentSession() { return $('sessionSel').value || 'default'; }
 
-    // Helper central de llamadas: agrega ?session= y el header X-Api-Key.
+    // Helper central de llamadas: agrega ?session= y manda la cookie de admin.
     async function api(path, { method = 'GET', body, extraQs } = {}) {
       const params = new URLSearchParams(extraQs || {});
       if (!params.has('session')) params.set('session', currentSession());
       const url = path + '?' + params.toString();
       const headers = {};
-      const k = apiKey();
-      if (k) headers['X-Api-Key'] = k;
-      const opts = { method, headers };
+      const opts = { method, headers, credentials: 'same-origin' };
       if (body instanceof FormData) {
         opts.body = body;
       } else if (body !== undefined) {
@@ -210,9 +235,10 @@
     }
 
     function markAuthNeeded() {
-      $('state').textContent = 'Falta API key';
-      $('hint').textContent = 'El servidor exige API key. Pegala arriba y tocá “Guardar key”.';
+      $('state').textContent = 'Hace falta iniciar sesión';
+      $('hint').textContent = 'La API exige usuario y contraseña de administrador.';
       $('dot').className = 'dot off';
+      $('loginOverlay').classList.add('visible');
     }
 
     // --- Estado / QR de la sesión activa ------------------------------------
@@ -280,12 +306,50 @@
       refreshStatus();
     };
 
-    // --- API key ------------------------------------------------------------
-    $('apiKey').value = apiKey();
-    $('btnSaveKey').onclick = async () => {
-      localStorage.setItem('wa_apikey', $('apiKey').value.trim());
+    // --- Login del panel + token de API --------------------------------------
+    $('loginForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const err = $('loginError');
+      err.className = 'result';
+      const r = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ user: $('loginUser').value, pass: $('loginPass').value }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) {
+        err.className = 'result err';
+        err.textContent = j.error || 'No se pudo iniciar sesión.';
+        return;
+      }
+      $('loginOverlay').classList.remove('visible');
+      $('loginPass').value = '';
+      await loadToken();
       await loadSessions();
       refreshStatus();
+    };
+
+    async function loadToken() {
+      try {
+        const r = await api('/token');
+        if (!r.ok) return;
+        $('tokenView').textContent = (await r.json()).token || '—';
+      } catch { /* queda el guion */ }
+    }
+
+    $('btnRotate').onclick = async () => {
+      if (!confirm('¿Rotar el token? Los consumidores van a tener que volver a loguearse para obtener el nuevo.')) return;
+      const r = await api('/rotate-token', { method: 'POST' });
+      if (r.status === 401) { markAuthNeeded(); return; }
+      const j = await r.json();
+      if (j.ok) $('tokenView').textContent = j.token;
+    };
+
+    $('btnLogoutAdmin').onclick = async () => {
+      await fetch('/logout-admin', { method: 'POST', credentials: 'same-origin' });
+      $('tokenView').textContent = '—';
+      markAuthNeeded();
     };
 
     // --- Envío --------------------------------------------------------------
@@ -325,6 +389,7 @@
 
     // --- Arranque -----------------------------------------------------------
     (async function init() {
+      await loadToken();
       await loadSessions();
       await refreshStatus();
       setInterval(refreshStatus, 3000);

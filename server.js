@@ -15,19 +15,22 @@
  * y cada consumidor (p.ej. cada tienda del APK) indica de qué sesión salen sus
  * mensajes.
  *
- * AUTH DE FACHADA (opt-in): si la env FACADE_API_KEY está definida (no vacía),
- * toda ruta de API exige el header `X-Api-Key` (o ?apikey=) con ese valor; la web
- * UI estática en '/' queda pública (su JS adjunta la key). Si FACADE_API_KEY está
- * vacía/ausente, NO se exige nada — preserva el comportamiento actual y no rompe a
- * chillones.lat ni a la web de TIENDA que hoy llaman sin auth. La key se lee por
- * request (no al boot) para poder activarla/rotarla sin reiniciar. Es DISTINTA de
- * WAHA_API_KEY (secreto interno motor↔fachada).
+ * AUTH OBLIGATORIA (iteración 1.2): TODA ruta de API exige cookie de admin
+ * (obtenida con POST /login) o el token vigente en `X-Api-Key`/?apikey=. Sin
+ * credencial responde 401 { error: 'login_requerido' } con un mensaje que pide
+ * actualizarse porque ahora se necesita iniciar sesión para enviar mensajes.
+ * Credenciales y token viven en ./data/auth.json (ver ./auth.js); el token se
+ * siembra desde FACADE_API_KEY en el primer arranque para no romper a los
+ * consumidores existentes. La web UI estática en '/' queda pública (su JS hace
+ * login y usa la cookie). WAHA_API_KEY sigue siendo el secreto interno
+ * motor↔fachada, distinto de todo esto.
  *
  * No habla con WhatsApp directamente: todo pasa por ./wahaClient.js. Al arrancar
  * engancha la sesión por defecto (con reintentos) para reconectar sola tras un
  * `docker compose up` si ya estaba guardada en el volumen persistente.
  *
- * Config por entorno: PORT (default 80), FACADE_API_KEY (opcional) + las de
+ * Config por entorno: PORT (default 80), AUTH_DIR / ADMIN_USER / ADMIN_PASS /
+ * FACADE_API_KEY (solo siembran el primer arranque; ver auth.js) + las de
  * wahaClient.js (WAHA_URL, WAHA_SESSION, WAHA_API_KEY). Requiere Node 18+.
  */
 
@@ -36,6 +39,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const waha = require('./wahaClient');
+const auth = require('./auth');
 
 const app = express();
 app.use(cors());
@@ -59,18 +63,57 @@ function getSession(req) {
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------------------------------------------------------------------
-// Auth de fachada (opt-in). A partir de acá, toda ruta de API queda protegida
-// si FACADE_API_KEY está definida. Se lee por request para poder activarla sin
-// reiniciar (y para que los tests puedan ejercitar ambos modos).
+// Autenticación (OBLIGATORIA). Rutas públicas: la UI estática, /login,
+// /change-password (valida la contraseña actual por sí misma) y /logout-admin.
+// Todo lo demás exige cookie de admin o X-Api-Key con el token vigente.
 // ---------------------------------------------------------------------------
-function requireApiKey(req, res, next) {
-  const key = process.env.FACADE_API_KEY || '';
-  if (!key) return next(); // auth desactivada: comportamiento legacy
-  const provided = req.get('X-Api-Key') || req.query.apikey;
-  if (provided === key) return next();
-  return res.status(401).json({ error: 'API key inválida o ausente' });
+const COOKIE_NAME = 'wa_admin';
+const MENSAJE_401 =
+  'La API de WhatsApp ahora requiere iniciar sesión para enviar mensajes. ' +
+  'Debe actualizar su aplicación o configurar usuario y contraseña para continuar.';
+
+// Lee el sid de la cookie wa_admin sin depender de cookie-parser.
+function sidFrom(req) {
+  const raw = req.headers.cookie || '';
+  const m = raw.match(new RegExp('(?:^|;\\s*)' + COOKIE_NAME + '=([^;]+)'));
+  return m ? m[1] : '';
 }
-app.use(requireApiKey);
+
+// Login de admin: emite el token de API + cookie de sesión para el panel.
+app.post('/login', (req, res) => {
+  const { user, pass } = req.body || {};
+  const r = auth.login(String(user || ''), String(pass || ''));
+  if (!r.ok) return res.status(401).json({ ok: false, error: 'usuario o contraseña incorrectos' });
+  res.setHeader('Set-Cookie', `${COOKIE_NAME}=${r.sid}; HttpOnly; Path=/; Max-Age=43200; SameSite=Lax`);
+  res.json({ ok: true, token: r.token });
+});
+
+// Cambio de contraseña (valida la actual; lo usa TIENDA para mantenerse en sync).
+app.post('/change-password', (req, res) => {
+  const { user, passActual, passNueva } = req.body || {};
+  const r = auth.changePassword(String(user || ''), String(passActual || ''), String(passNueva || ''));
+  if (!r.ok) return res.status(401).json(r);
+  res.json(r);
+});
+
+// Cierra la sesión de cookie del panel.
+app.post('/logout-admin', (req, res) => {
+  auth.logoutSid(sidFrom(req));
+  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
+  res.json({ ok: true });
+});
+
+function requireAuth(req, res, next) {
+  if (auth.isAdminSid(sidFrom(req))) return next();
+  const provided = req.get('X-Api-Key') || req.query.apikey;
+  if (provided && provided === auth.getToken()) return next();
+  return res.status(401).json({ error: 'login_requerido', message: MENSAJE_401 });
+}
+app.use(requireAuth);
+
+// Token vigente (para mostrarlo en el panel) y rotación.
+app.get('/token', (req, res) => res.json({ token: auth.getToken() }));
+app.post('/rotate-token', (req, res) => res.json({ ok: true, token: auth.rotateToken() }));
 
 // ---------------------------------------------------------------------------
 // Gestión de sesiones (multi-número)
